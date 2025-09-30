@@ -43,14 +43,14 @@ async function initOracle() {
 async function checkLogin(connection, username, password) {
   // ลำดับการตรวจสอบ: Superadmin -> Admin -> User
   const roles = [
-    { name: 'superadmin', table: 'SUPERADMIN' },
-    { name: 'admin', table: 'ADMIN' },
-    { name: 'users', table: 'USERS' }
+    { name: "superadmin", table: "SUPERADMIN" },
+    { name: "admin", table: "ADMIN" },
+    { name: "users", table: "USERS" },
   ];
 
   for (const roleInfo of roles) {
     try {
-      // ดึงข้อมูลผู้ใช้ตาม Username จากตารางที่กำหนด (ดึง PASSWORD_HASH)
+      // ดึงข้อมูลผู้ใช้ตาม Username
       const result = await connection.execute(
         `SELECT * FROM ${roleInfo.table} WHERE USERNAME = :un`,
         { un: username },
@@ -59,10 +59,24 @@ async function checkLogin(connection, username, password) {
 
       if (result.rows.length > 0) {
         const user = result.rows[0];
-        // ตรวจสอบรหัสผ่านด้วย bcryptjs
-        const passwordMatch = await bcrypt.compare(password, user.PASSWORD_HASH);
+
+        // ✅ รองรับทั้ง PASSWORD_HASH และ PASSWORD
+        const storedHash = user.PASSWORD_HASH || user.PASSWORD;
+
+        // ✅ ตรวจสอบว่ามี Hash หรือไม่
+        if (!storedHash) {
+          console.error(`❌ ไม่พบรหัสผ่านในตาราง ${roleInfo.table}`);
+          return { success: false, message: "ข้อมูลรหัสผ่านไม่ถูกต้อง" };
+        }
+
+        console.log(`🔍 Checking ${roleInfo.name}:`, username);
+        console.log(`🔑 Stored Hash:`, storedHash);
+
+        // ตรวจสอบรหัสผ่านด้วย bcrypt
+        const passwordMatch = await bcrypt.compare(password, storedHash);
+
         if (passwordMatch) {
-          // ล็อกอินสำเร็จ คืนข้อมูลผู้ใช้และ Role
+          // ล็อกอินสำเร็จ
           return { success: true, user, role: roleInfo.name };
         }
         return { success: false, message: "รหัสผ่านไม่ถูกต้อง" };
@@ -74,47 +88,50 @@ async function checkLogin(connection, username, password) {
   return { success: false, message: "ไม่พบชื่อผู้ใช้" };
 }
 
-
-app.post("/login", async (req, res) => { 
-  const { username, password } = req.body; 
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
   let connection;
-  
+
   try {
-    connection = await oracledb.getConnection(dbConfig); 
+    connection = await oracledb.getConnection(dbConfig);
     const authResult = await checkLogin(connection, username, password);
 
     if (authResult.success) {
-        const { role } = authResult;
-        
-  // แสดงผลใน Backend Console เมื่อล็อกอินสำเร็จ
-        console.log(`[LOGIN SUCCESS] User: ${username} (Role: ${role})`);
-        
-        // ส่งแค่ Role กลับไปให้ Frontend (ไม่มี Token)
-        return res.json({ 
-            success: true, 
-            role, 
-            message: `เข้าสู่ระบบสำเร็จในฐานะ ${role}` 
-        });
+      const { role } = authResult;
+
+      // แสดงผลใน Backend Console เมื่อล็อกอินสำเร็จ
+      console.log(`[LOGIN SUCCESS] User: ${username} (Role: ${role})`);
+
+      // ส่งแค่ Role กลับไปให้ Frontend (ไม่มี Token)
+      return res.json({
+        success: true,
+        role,
+        message: `เข้าสู่ระบบสำเร็จในฐานะ ${role}`,
+      });
     } else {
-  // แสดงผลใน Backend Console เมื่อล็อกอินล้มเหลว
-        console.log(`[LOGIN FAILED] Attempt by: ${username}`);
-        
-        return res.json({ success: false, message: `❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง (${authResult.message})` }); 
+      // แสดงผลใน Backend Console เมื่อล็อกอินล้มเหลว
+      console.log(`[LOGIN FAILED] Attempt by: ${username}`);
+
+      return res.json({
+        success: false,
+        message: `❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง (${authResult.message})`,
+      });
     }
   } catch (err) {
-    console.error("DB Error:", err); 
-    res.status(500).json({ success: false, message: "Database or Server error" });
+    console.error("DB Error:", err);
+    res
+      .status(500)
+      .json({ success: false, message: "Database or Server error" });
   } finally {
-    if (connection) { 
-      try { 
-        await connection.close(); 
-      } catch (err) { 
-        console.error("Close error:", err); 
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
       }
     }
   }
 });
-
 
 app.get("/api/admin-data", async (req, res) => {
   let connection;
@@ -308,7 +325,6 @@ app.post("/api/delete-user", async (req, res) => {
 });
 
 app.post("/api/update-user", async (req, res) => {
-  // ✅ แก้ไขให้ตรงกับ add-users
   const {
     user_id,
     username,
@@ -318,10 +334,14 @@ app.post("/api/update-user", async (req, res) => {
     email,
     phone,
   } = req.body;
+
+  console.log("📦 รับข้อมูล:", req.body); // ✅ log ตรวจสอบ
+
   let connection;
   try {
     connection = await oracledb.getConnection(dbConfig);
-    await connection.execute(
+
+    const result = await connection.execute(
       `UPDATE users SET 
         password_hash = :password_hash,
         first_name = :first_name,
@@ -332,6 +352,13 @@ app.post("/api/update-user", async (req, res) => {
       { user_id, username, password_hash, first_name, last_name, email, phone },
       { autoCommit: true }
     );
+
+    console.log("✅ อัปเดตแล้ว:", result.rowsAffected); // ✅ ตรวจว่าอัปเดตจริง
+
+    if (result.rowsAffected === 0) {
+      return res.status(404).json({ message: "ไม่พบผู้ใช้งานที่ต้องการแก้ไข" });
+    }
+
     res.json({ message: "แก้ไขข้อมูลผู้ใช้งานสำเร็จ" });
   } catch (err) {
     console.error("DB Error:", err);
@@ -347,12 +374,12 @@ app.post("/api/update-user", async (req, res) => {
   }
 });
 
-initOracle(); 
+initOracle();
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
 
-
-
+/// addmin admin001 1234 มันจะเป็น password_hash
+/// superadmin superadmin 9999 มันจะเป็น password_hash
 
