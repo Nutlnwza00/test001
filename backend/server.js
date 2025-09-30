@@ -116,6 +116,28 @@ app.post("/login", async (req, res) => {
 });
 
 
+app.get("/api/admin-data", async (req, res) => {
+  let connection;
+  try {
+    connection = await oracledb.getConnection(dbConfig);
+    const result = await connection.execute(`SELECT * FROM ADMIN`, [], {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+    });
+    console.log("ADMIN from DB:", result.rows);
+    res.json({ admin: result.rows });
+  } catch (err) {
+    console.error("DB Error:", err);
+    res.status(500).json({ message: "Database error" });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
+      }
+    }
+  }
+});
 // Endpoint สำหรับดึงข้อมูลผู้ใช้ทั้งหมด (ไม่มีการป้องกันสิทธิ์)
 app.get("/api/users", async (req, res) => {
   let connection;
