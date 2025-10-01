@@ -8,6 +8,10 @@ import AddEmployee from "./Addusers.jsx";
 import ManageUsers from "./ManageUsers.jsx"; // เพิ่มบรรทัดนี้
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import AddAdmin from "./addadmin.jsx";
+import ManageAdmin from "./Manageadmin.jsx";
+
+
 
 function App() {
   const [role, setRole] = useState(localStorage.getItem("userRole"));
@@ -61,8 +65,39 @@ function App() {
             )
           }
         />{" "}
-        {/* เพิ่มบรรทัดนี้ */}
+        <Route
+          path="/AddAdmin"
+          element={
+            role === "superadmin" ? (
+              <AddAdmin />
+            ) : (
+              <Navigate to="/home" replace />
+            )
+          }
+        />
+        <Route
+          path="/ManageAdmin"
+          element={
+            role === "superadmin" ? (
+              <ManageAdmin />
+            ) : (
+              <Navigate to="/home" replace />
+            )
+          }
+        />  
+
+        
+      
+      
+  
+
       </Routes>
+        
+     
+    
+
+
+          
     </BrowserRouter>
   );
 }

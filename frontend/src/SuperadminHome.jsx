@@ -17,12 +17,17 @@ const SuperadminHome = () => {
                     </button>
                 </Link>
                 <hr style={{width: '100%', border: '1px solid #eee', margin: '0.5rem 0'}} />
-                <button style={menuBtnStyle}>
+
+                <Link to={'/AddAdmin'}>
+                 <button style={menuBtnStyle}>
                     <span role="img" aria-label="add-employee">👨‍💼</span> เพิ่มพนักงาน
                 </button>
-                <button style={menuBtnStyle}>
+                </Link>
+                <Link to={'/ManageAdmin'}>
+                    <button style={menuBtnStyle}>
                     <span role="img" aria-label="manage-employee">🛠️</span> จัดการพนักงาน
                 </button>
+                </Link>
                 <hr style={{width: '100%', border: '1px solid #eee', margin: '0.5rem 0'}} />
                 <button style={menuBtnStyle}>
                     <span role="img" aria-label="add-route">🛣️</span> เพิ่มเส้นทาง

@@ -374,6 +374,224 @@ app.post("/api/update-user", async (req, res) => {
   }
 });
 
+// ==================== GET: ดึงรายชื่อ Admin ====================
+app.get("/api/admin", async (req, res) => {
+  let connection;
+  try {
+    connection = await oracledb.getConnection(dbConfig);
+
+    const result = await connection.execute(
+      `SELECT NATIONAL_ID, USERNAME, FIRST_NAME, LAST_NAME, PHONE, POSITION_TITLE 
+       FROM ADMIN 
+       ORDER BY USERNAME`,
+      [],
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+
+    console.log("ADMIN from DB:", result.rows);
+    res.json({ admin: result.rows });
+  } catch (err) {
+    console.error("DB Error:", err);
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูล" });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
+      }
+    }
+  }
+});
+
+// ==================== POST: เพิ่ม Admin ใหม่ ====================
+app.post("/api/add-admin", async (req, res) => {
+  let connection;
+  try {
+    const { national_id, username, password_hash, first_name, last_name, phone, position_title } = req.body;
+
+    // ตรวจสอบข้อมูลที่จำเป็น
+    if (!national_id || !username || !password_hash || !first_name || !last_name || !phone || !position_title) {
+      return res.status(400).json({ message: "กรุณากรอกข้อมูลให้ครบถ้วน" });
+    }
+
+    // ตรวจสอบเลขบัตรประชาชน 13 หลัก
+    if (!/^\d{13}$/.test(national_id)) {
+      return res.status(400).json({ message: "เลขบัตรประชาชนต้องเป็นตัวเลข 13 หลัก" });
+    }
+
+    // ตรวจสอบเบอร์โทร 10 หลัก
+    if (!/^\d{10}$/.test(phone)) {
+      return res.status(400).json({ message: "เบอร์โทรศัพท์ต้องเป็นตัวเลข 10 หลัก" });
+    }
+
+    connection = await oracledb.getConnection(dbConfig);
+
+    // ตรวจสอบว่า username ซ้ำหรือไม่
+    const checkUsername = await connection.execute(
+      `SELECT USERNAME FROM ADMIN WHERE USERNAME = :username`,
+      [username],
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+
+    if (checkUsername.rows.length > 0) {
+      return res.status(400).json({ message: "Username นี้ถูกใช้งานแล้ว" });
+    }
+
+    // ตรวจสอบว่าเลขบัตรประชาชนซ้ำหรือไม่
+    const checkNationalId = await connection.execute(
+      `SELECT NATIONAL_ID FROM ADMIN WHERE NATIONAL_ID = :national_id`,
+      [national_id],
+      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    );
+
+    if (checkNationalId.rows.length > 0) {
+      return res.status(400).json({ message: "เลขบัตรประชาชนนี้ถูกใช้งานแล้ว" });
+    }
+
+    // เพิ่มข้อมูล Admin ใหม่
+    await connection.execute(
+      `INSERT INTO ADMIN (NATIONAL_ID, USERNAME, PASSWORD, FIRST_NAME, LAST_NAME, PHONE, POSITION_TITLE) 
+       VALUES (:national_id, :username, :password_hash, :first_name, :last_name, :phone, :position_title)`,
+      {
+        national_id,
+        username,
+        password_hash,
+        first_name,
+        last_name,
+        phone,
+        position_title
+      },
+      { autoCommit: true }
+    );
+
+    console.log("Admin added successfully:", username);
+    res.status(201).json({ message: "เพิ่มผู้ดูแลระบบสำเร็จ" });
+
+  } catch (err) {
+    console.error("DB Error:", err);
+    
+    // จัดการ error จาก Oracle
+    if (err.errorNum === 1) {
+      return res.status(400).json({ message: "ข้อมูลซ้ำในระบบ" });
+    }
+    
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการเพิ่มผู้ดูแลระบบ" });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
+      }
+    }
+  }
+});
+
+// ==================== DELETE: ลบ Admin (Optional) ====================
+app.delete("/api/admin/:username", async (req, res) => {
+  let connection;
+  try {
+    const { username } = req.params;
+
+    connection = await oracledb.getConnection(dbConfig);
+
+    const result = await connection.execute(
+      `DELETE FROM ADMIN WHERE USERNAME = :username`,
+      [username],
+      { autoCommit: true }
+    );
+
+    if (result.rowsAffected === 0) {
+      return res.status(404).json({ message: "ไม่พบผู้ดูแลระบบนี้" });
+    }
+
+    console.log("Admin deleted:", username);
+    res.json({ message: "ลบผู้ดูแลระบบสำเร็จ" });
+
+  } catch (err) {
+    console.error("DB Error:", err);
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบผู้ดูแลระบบ" });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
+      }
+    }
+  }
+});
+
+// ==================== PUT: แก้ไขข้อมูล Admin (Optional) ====================
+app.put("/api/admin/:username", async (req, res) => {
+  let connection;
+  try {
+    const { username } = req.params;
+    const { first_name, last_name, phone, position_title, password_hash } = req.body;
+
+    connection = await oracledb.getConnection(dbConfig);
+
+    // สร้าง SQL แบบ dynamic
+    let sql = "UPDATE ADMIN SET ";
+    const binds = { username };
+    const updates = [];
+
+    if (first_name) {
+      updates.push("FIRST_NAME = :first_name");
+      binds.first_name = first_name;
+    }
+    if (last_name) {
+      updates.push("LAST_NAME = :last_name");
+      binds.last_name = last_name;
+    }
+    if (phone) {
+      updates.push("PHONE = :phone");
+      binds.phone = phone;
+    }
+    if (position_title) {
+      updates.push("POSITION_TITLE = :position_title");
+      binds.position_title = position_title;
+    }
+    if (password_hash) {
+      updates.push("PASSWORD = :password_hash");
+      binds.password_hash = password_hash;
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ message: "ไม่มีข้อมูลที่ต้องการแก้ไข" });
+    }
+
+    sql += updates.join(", ") + " WHERE USERNAME = :username";
+
+    const result = await connection.execute(sql, binds, { autoCommit: true });
+
+    if (result.rowsAffected === 0) {
+      return res.status(404).json({ message: "ไม่พบผู้ดูแลระบบนี้" });
+    }
+
+    console.log("Admin updated:", username);
+    res.json({ message: "แก้ไขข้อมูลสำเร็จ" });
+
+  } catch (err) {
+    console.error("DB Error:", err);
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูล" });
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        console.error("Close error:", err);
+      }
+    }
+  }
+});
+
+  
+
+
+
+
 initOracle();
 
 app.listen(PORT, () => {
