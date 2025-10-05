@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card {
+    @apply bg-indigo-600 text-white rounded-xl shadow-lg p-6 text-center hover:bg-indigo-700 transition transform hover:scale-105;
+  }
+  .card-icon {
+    @apply text-5xl mb-2;
+  }
+  .card-title {
+    @apply text-lg font-semibold tracking-wide;
+  }
+}
+@layer components {
+  .label {
+    @apply block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1;
+  }
+  .select {
+    @apply w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-white;
+  }
+  .input {
+    @apply w-full px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-white;
+  }
+}

@@ -1,105 +1,52 @@
-import React, { useState, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import Login from "./Login.jsx";
-import UserHome from "./UserHome.jsx";
-import AdminHome from "./AdminHome.jsx";
-import SuperadminHome from "./SuperadminHome.jsx";
-import AddEmployee from "./Addusers.jsx";
-import ManageUsers from "./ManageUsers.jsx"; // เพิ่มบรรทัดนี้
-import { ToastContainer } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
-import AddAdmin from "./addadmin.jsx";
-import ManageAdmin from "./Manageadmin.jsx";
+import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import LandingPage from "./pages/LandingPage";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import Booking from "./pages/ฺBooking";
+import Schedule from "./pages/Schedule";
+import Checkin from "./pages/Checkin";
+import Profile from "./pages/Profile";
+import Reports from "./pages/Reports";
+import RoundTripManager from "./pages/RoundTripManager";
+import AdminDashboard from "./pages/AdminDashboard";
+import ProtectedRoute from "./components/ProtectedRoute";
 
-
-
-function App() {
-  const [role, setRole] = useState(localStorage.getItem("userRole"));
-
-  // ฟังก์ชันนี้จะใช้ในการตรวจสอบและนำทางผู้ใช้ไปยังหน้า Home ที่ถูกต้อง
-  const determineHomeRoute = () => {
-    const currentRole = localStorage.getItem("userRole");
-
-    switch (currentRole) {
-      case "users":
-        return <UserHome />;
-      case "admin":
-        return <AdminHome />;
-      case "superadmin":
-        return <SuperadminHome />;
-      default:
-        // หากไม่มี Role ให้นำไปหน้า Login
-        return <Navigate to="/" replace />;
-    }
-  };
-
-  useEffect(() => {
-    setRole(localStorage.getItem("userRole"));
-  }, []);
-
+export default function App() {
   return (
-    <BrowserRouter>
-      <ToastContainer position="top-center" autoClose={3000} />
-
+    <Router>
       <Routes>
-        <Route path="/" element={<Login setRole={setRole} />} />
-        {/* เส้นทาง /home จะเรียก determineHomeRoute เพื่อตัดสินใจว่าจะแสดง Home ของ Role ใด */}
-        <Route path="/home/*" element={determineHomeRoute()} />
+        <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/booking" element={<Booking />} />
+        <Route path="/schedule" element={<Schedule />} />
+        <Route path="/checkin" element={<Checkin />} />
+        <Route path="/profile" element={<Profile />} />
         <Route
-          path="/Addusers"
+          path="/admin-dashboard"
           element={
-            role === "superadmin" || role === "admin" ? (
-              <AddEmployee />
-            ) : (
-              <Navigate to="/home" replace />
-            )
+            <ProtectedRoute allowedRoles={["admin"]}>
+              <AdminDashboard />
+            </ProtectedRoute>
           }
         />
         <Route
-          path="/ManageUsers"
+          path="/reports"
           element={
-            role === "superadmin" || role === "admin" ? (
-              <ManageUsers />
-            ) : (
-              <Navigate to="/home" replace />
-            )
-          }
-        />{" "}
-        <Route
-          path="/AddAdmin"
-          element={
-            role === "superadmin" ? (
-              <AddAdmin />
-            ) : (
-              <Navigate to="/home" replace />
-            )
+            <ProtectedRoute allowedRoles={["admin"]}>
+              <Reports />
+            </ProtectedRoute>
           }
         />
         <Route
-          path="/ManageAdmin"
+          path="/rounds"
           element={
-            role === "superadmin" ? (
-              <ManageAdmin />
-            ) : (
-              <Navigate to="/home" replace />
-            )
+            <ProtectedRoute allowedRoles={["admin"]}>
+              <RoundTripManager />
+            </ProtectedRoute>
           }
-        />  
-
-        
-      
-      
-  
-
+        />
       </Routes>
-        
-     
-    
-
-
-          
-    </BrowserRouter>
+    </Router>
   );
 }
-
-export default App;

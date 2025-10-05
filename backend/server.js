@@ -1,603 +1,450 @@
-const express = require('express');
-const oracledb = require('oracledb');
-const path = require('path');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
+require("dotenv").config();
+const express = require("express");
+const oracledb = require("oracledb");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const cors = require("cors");
 
 const app = express();
-const PORT = 5000;
-
-app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({ origin: process.env.FRONTEND_URL }));
 
-// *** WARNING: No JWT or bcrypt for security ***
-
+// Oracle Instant Client
 const clientLibDir =
   process.platform === "win32"
-    ? "C:\\oracle\\instantclient_23_9" // <-- แก้ไขพาธนี้
-    : "/opt/oracle/instantclient_11_2"; // <-- แก้ไขสำหรับ Linux
-
+    ? "C:\\oracle\\instantclient_23_9"
+    : "/opt/oracle/instantclient_11_2";
 oracledb.initOracleClient({ libDir: clientLibDir });
 
-
-const dbConfig = { 
-  user: "DBT68086", // User ของคุณ
-  password: "28797", // Password ของคุณ
-  connectString: "203.188.54.7:1521/database3", // Host:Port/SID
+// Oracle Connection Pool
+const dbConfig = {
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  connectString: process.env.DB_CONNECTION_STRING,
+  poolMin: 2,
+  poolMax: 10,
+  poolIncrement: 2,
 };
 
-async function initOracle() { 
+// JWT Secret
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// Create Pool
+async function initialize() {
   try {
-    await oracledb.createPool(dbConfig); 
-  console.log("✅ Oracle DB connected");
+    await oracledb.createPool(dbConfig);
+    console.log("✅ Oracle pool created");
   } catch (err) {
-    console.error("❌ Oracle DB connection error:", err); 
-    process.exit(1); 
+    console.error("❌ Pool error:", err);
+    process.exit(1);
   }
 }
 
-// -------------------------------------------------------------
-// *************** ฟังก์ชันตรวจสอบผู้ใช้ด้วย Plain Text Password ************
-// -------------------------------------------------------------
-async function checkLogin(connection, username, password) {
-  // ลำดับการตรวจสอบ: Superadmin -> Admin -> User
-  const roles = [
-    { name: "superadmin", table: "SUPERADMIN" },
-    { name: "admin", table: "ADMIN" },
-    { name: "users", table: "USERS" },
-  ];
-
-  for (const roleInfo of roles) {
-    try {
-      // ดึงข้อมูลผู้ใช้ตาม Username
-      const result = await connection.execute(
-        `SELECT * FROM ${roleInfo.table} WHERE USERNAME = :un`,
-        { un: username },
-        { outFormat: oracledb.OUT_FORMAT_OBJECT }
-      );
-
-      if (result.rows.length > 0) {
-        const user = result.rows[0];
-
-        // ✅ รองรับทั้ง PASSWORD_HASH และ PASSWORD
-        const storedHash = user.PASSWORD_HASH || user.PASSWORD;
-
-        // ✅ ตรวจสอบว่ามี Hash หรือไม่
-        if (!storedHash) {
-          console.error(`❌ ไม่พบรหัสผ่านในตาราง ${roleInfo.table}`);
-          return { success: false, message: "ข้อมูลรหัสผ่านไม่ถูกต้อง" };
-        }
-
-        console.log(`🔍 Checking ${roleInfo.name}:`, username);
-        console.log(`🔑 Stored Hash:`, storedHash);
-
-        // ตรวจสอบรหัสผ่านด้วย bcrypt
-        const passwordMatch = await bcrypt.compare(password, storedHash);
-
-        if (passwordMatch) {
-          // ล็อกอินสำเร็จ
-          return { success: true, user, role: roleInfo.name };
-        }
-        return { success: false, message: "รหัสผ่านไม่ถูกต้อง" };
-      }
-    } catch (err) {
-      console.error(`Error checking ${roleInfo.name}:`, err);
-    }
-  }
-  return { success: false, message: "ไม่พบชื่อผู้ใช้" };
-}
-
-app.post("/login", async (req, res) => {
-  const { username, password } = req.body;
-  let connection;
-
+// Close Pool on Exit
+process.on("SIGINT", async () => {
   try {
-    connection = await oracledb.getConnection(dbConfig);
-    const authResult = await checkLogin(connection, username, password);
-
-    if (authResult.success) {
-      const { role } = authResult;
-
-      // แสดงผลใน Backend Console เมื่อล็อกอินสำเร็จ
-      console.log(`[LOGIN SUCCESS] User: ${username} (Role: ${role})`);
-
-      // ส่งแค่ Role กลับไปให้ Frontend (ไม่มี Token)
-      return res.json({
-        success: true,
-        role,
-        message: `เข้าสู่ระบบสำเร็จในฐานะ ${role}`,
-      });
-    } else {
-      // แสดงผลใน Backend Console เมื่อล็อกอินล้มเหลว
-      console.log(`[LOGIN FAILED] Attempt by: ${username}`);
-
-      return res.json({
-        success: false,
-        message: `❌ ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง (${authResult.message})`,
-      });
-    }
+    await oracledb.getPool().close(10);
+    console.log("🛑 Pool closed");
+    process.exit(0);
   } catch (err) {
-    console.error("DB Error:", err);
-    res
-      .status(500)
-      .json({ success: false, message: "Database or Server error" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    console.error(err);
+    process.exit(1);
   }
 });
 
-app.get("/api/admin-data", async (req, res) => {
-  let connection;
+// Helper: Execute Query
+async function executeQuery(sql, binds = {}, options = {}) {
+  let conn;
   try {
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(`SELECT * FROM ADMIN`, [], {
+    conn = await oracledb.getConnection();
+    const result = await conn.execute(sql, binds, {
       outFormat: oracledb.OUT_FORMAT_OBJECT,
+      autoCommit: true,
+      ...options,
     });
-    console.log("ADMIN from DB:", result.rows);
-    res.json({ admin: result.rows });
-  } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "Database error" });
+    return result;
   } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    if (conn) await conn.close();
   }
+}
+
+// Middleware: Verify Token
+function authenticateToken(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Token required" });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: "Invalid token" });
+    req.user = user;
+    next();
+  });
+}
+
+// Middleware: Check Permission
+function checkPermission(required) {
+  return (req, res, next) => {
+    if (!req.user?.permissions?.includes(required)) {
+      return res.status(403).json({ error: "Permission denied" });
+    }
+    next();
+  };
+}
+
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || "http://localhost:5173",
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+
+// ==================== AUTH ====================
+app.post("/api/users/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  const userRes = await executeQuery(
+    `SELECT USER_ID, USERNAME, FULL_NAME, PHONE_NUMBER, PASSWORD_HASH FROM APP_USER WHERE USERNAME = :username`,
+    { username }
+  );
+  const user = userRes.rows[0];
+  if (!user) return res.status(404).json({ error: "ไม่พบผู้ใช้" });
+
+  const valid = await bcrypt.compare(password, user.PASSWORD_HASH);
+  if (!valid) return res.status(401).json({ error: "รหัสผ่านไม่ถูกต้อง" });
+
+  const roleRes = await executeQuery(
+    `SELECT r.ROLE_NAME FROM USER_ROLE ur JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID WHERE ur.USER_ID = :userId`,
+    { userId: user.USER_ID }
+  );
+  const permRes = await executeQuery(
+    `SELECT p.PERMISSION_NAME FROM PERMISSION p
+     JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
+     JOIN USER_ROLE ur ON rp.ROLE_ID = ur.ROLE_ID
+     WHERE ur.USER_ID = :userId`,
+    { userId: user.USER_ID }
+  );
+
+  const role = roleRes.rows[0]?.ROLE_NAME || "user";
+  const permissions = permRes.rows.map((p) => p.PERMISSION_NAME);
+
+  const token = jwt.sign(
+    {
+      userId: user.USER_ID,
+      username: user.USERNAME,
+      role,
+      permissions,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "24h" }
+  );
+
+  res.json({
+    token,
+    user: {
+      userId: user.USER_ID,
+      username: user.USERNAME,
+      fullName: user.FULL_NAME,
+      phoneNumber: user.PHONE_NUMBER,
+      role,
+      permissions,
+    },
+  });
 });
-// Endpoint สำหรับดึงข้อมูลผู้ใช้ทั้งหมด (ไม่มีการป้องกันสิทธิ์)
-app.get("/api/users", async (req, res) => {
-  let connection;
+
+app.get("/api/users/profile", authenticateToken, async (req, res) => {
   try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    // ✅ เพิ่ม ORDER BY เรียงตาม user_id
-    const result = await connection.execute(
-      `SELECT * FROM USERS 
-       ORDER BY TO_NUMBER(SUBSTR(user_id, 6))`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
+    const result = await executeQuery(
+      `SELECT USER_ID, USERNAME, FULL_NAME, EMAIL, PHONE_NUMBER FROM APP_USER WHERE USER_ID = :userId`,
+      { userId: req.user.userId }
     );
-
-    console.log("USERS from DB:", result.rows);
-    res.json({ users: result.rows });
+    res.json(result.rows[0]);
   } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "Database error" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
-  }
-});
-app.post("/api/add-users", async (req, res) => {
-  console.log("📦 Body:", req.body);
-
-  if (!req.body || Object.keys(req.body).length === 0) {
-    return res.status(400).json({
-      message: "❌ Request body is empty",
-    });
-  }
-
-  // ตัด Space ออก
-  let { username, password_hash, first_name, last_name, email, phone } =
-    req.body;
-
-  username = username?.trim();
-  first_name = first_name?.trim();
-  last_name = last_name?.trim();
-  email = email?.trim();
-  phone = phone?.trim();
-
-  if (!username || !password_hash || !first_name || !last_name || !email) {
-    return res.status(400).json({
-      message: "❌ Missing required fields",
-    });
-  }
-
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    // ✅ หาเลข user_id ล่าสุด (ใช้ ROWNUM แทน FETCH FIRST)
-    const lastUser = await connection.execute(
-      `SELECT * FROM (
-         SELECT user_id FROM users 
-         WHERE user_id LIKE 'user_%' 
-         ORDER BY TO_NUMBER(SUBSTR(user_id, 6)) DESC
-       ) WHERE ROWNUM = 1`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    // ✅ สร้าง user_id ใหม่
-    let newUserId;
-    if (lastUser.rows.length > 0) {
-      const lastId = lastUser.rows[0].USER_ID;
-      const lastNumber = parseInt(lastId.replace("user_", ""));
-      const newNumber = lastNumber + 1;
-      newUserId = `user_${String(newNumber).padStart(3, "0")}`;
-    } else {
-      newUserId = "user_001";
-    }
-
-    console.log("📝 New User ID:", newUserId);
-
-    // ตรวจสอบ username ซ้ำ
-    const checkUsername = await connection.execute(
-      `SELECT username FROM users WHERE TRIM(username) = :username`,
-      { username },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    if (checkUsername.rows.length > 0) {
-      return res.status(400).json({ message: "❌ Username นี้ถูกใช้ไปแล้ว" });
-    }
-
-    // ตรวจสอบ email ซ้ำ
-    const checkEmail = await connection.execute(
-      `SELECT email FROM users WHERE TRIM(email) = :email`,
-      { email },
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    if (checkEmail.rows.length > 0) {
-      return res.status(400).json({ message: "❌ อีเมลนี้ถูกใช้ไปแล้ว" });
-    }
-
-    // Insert ข้อมูล
-    await connection.execute(
-      `INSERT INTO users (user_id, username, password_hash, first_name, last_name, email, phone, status)
-       VALUES (:user_id, :username, :password_hash, :first_name, :last_name, :email, :phone, 'active')`,
-      {
-        user_id: newUserId,
-        username,
-        password_hash,
-        first_name,
-        last_name,
-        email,
-        phone,
-      },
-      { autoCommit: true }
-    );
-
-    res.json({ message: `✅ เพิ่มพนักงานสำเร็จ (${newUserId})` });
-  } catch (err) {
-    console.error("DB Error:", err);
-
-    if (err.message.includes("ORA-00001")) {
-      return res.status(400).json({
-        message: "❌ ข้อมูลซ้ำ: Username หรืออีเมลนี้มีในระบบแล้ว",
-      });
-    }
-
-    res
-      .status(500)
-      .json({ message: "❌ เกิดข้อผิดพลาดในฐานข้อมูล: " + err.message });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.post("/api/delete-user", async (req, res) => {
-  const { username } = req.body;
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-    await connection.execute(
-      `DELETE FROM users WHERE username = :username`,
-      { username },
-      { autoCommit: true }
-    );
-    res.json({ message: "ลบผู้ใช้งานสำเร็จ" });
-  } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "Database error" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
-  }
-});
+// ==================== ADMIN DASHBOARD ====================
 
-app.post("/api/update-user", async (req, res) => {
+app.get(
+  "/api/admin/dashboard",
+  authenticateToken,
+  checkPermission("VIEW_ADMIN_DASHBOARD"),
+  async (req, res) => {
+    res.json({ message: "ข้อมูลสำหรับ admin dashboard" });
+  }
+);
+
+// ==================== BOOKING ====================
+
+app.post("/api/bookings", authenticateToken, async (req, res) => {
   const {
     user_id,
-    username,
-    password_hash,
-    first_name,
-    last_name,
-    email,
-    phone,
+    round_trip_id,
+    pickup_stop_id,
+    dropoff_stop_id,
+    seat_count,
   } = req.body;
-
-  console.log("📦 รับข้อมูล:", req.body); // ✅ log ตรวจสอบ
-
-  let connection;
   try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    const result = await connection.execute(
-      `UPDATE users SET 
-        password_hash = :password_hash,
-        first_name = :first_name,
-        last_name = :last_name,
-        email = :email,
-        phone = :phone
-      WHERE user_id = :user_id AND username = :username`,
-      { user_id, username, password_hash, first_name, last_name, email, phone },
-      { autoCommit: true }
-    );
-
-    console.log("✅ อัปเดตแล้ว:", result.rowsAffected); // ✅ ตรวจว่าอัปเดตจริง
-
-    if (result.rowsAffected === 0) {
-      return res.status(404).json({ message: "ไม่พบผู้ใช้งานที่ต้องการแก้ไข" });
-    }
-
-    res.json({ message: "แก้ไขข้อมูลผู้ใช้งานสำเร็จ" });
-  } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "Database error" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
-  }
-});
-
-// ==================== GET: ดึงรายชื่อ Admin ====================
-app.get("/api/admin", async (req, res) => {
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-
-    const result = await connection.execute(
-      `SELECT NATIONAL_ID, USERNAME, FIRST_NAME, LAST_NAME, PHONE, POSITION_TITLE 
-       FROM ADMIN 
-       ORDER BY USERNAME`,
-      [],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    console.log("ADMIN from DB:", result.rows);
-    res.json({ admin: result.rows });
-  } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูล" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
-  }
-});
-
-// ==================== POST: เพิ่ม Admin ใหม่ ====================
-app.post("/api/add-admin", async (req, res) => {
-  let connection;
-  try {
-    const { national_id, username, password_hash, first_name, last_name, phone, position_title } = req.body;
-
-    // ตรวจสอบข้อมูลที่จำเป็น
-    if (!national_id || !username || !password_hash || !first_name || !last_name || !phone || !position_title) {
-      return res.status(400).json({ message: "กรุณากรอกข้อมูลให้ครบถ้วน" });
-    }
-
-    // ตรวจสอบเลขบัตรประชาชน 13 หลัก
-    if (!/^\d{13}$/.test(national_id)) {
-      return res.status(400).json({ message: "เลขบัตรประชาชนต้องเป็นตัวเลข 13 หลัก" });
-    }
-
-    // ตรวจสอบเบอร์โทร 10 หลัก
-    if (!/^\d{10}$/.test(phone)) {
-      return res.status(400).json({ message: "เบอร์โทรศัพท์ต้องเป็นตัวเลข 10 หลัก" });
-    }
-
-    connection = await oracledb.getConnection(dbConfig);
-
-    // ตรวจสอบว่า username ซ้ำหรือไม่
-    const checkUsername = await connection.execute(
-      `SELECT USERNAME FROM ADMIN WHERE USERNAME = :username`,
-      [username],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    if (checkUsername.rows.length > 0) {
-      return res.status(400).json({ message: "Username นี้ถูกใช้งานแล้ว" });
-    }
-
-    // ตรวจสอบว่าเลขบัตรประชาชนซ้ำหรือไม่
-    const checkNationalId = await connection.execute(
-      `SELECT NATIONAL_ID FROM ADMIN WHERE NATIONAL_ID = :national_id`,
-      [national_id],
-      { outFormat: oracledb.OUT_FORMAT_OBJECT }
-    );
-
-    if (checkNationalId.rows.length > 0) {
-      return res.status(400).json({ message: "เลขบัตรประชาชนนี้ถูกใช้งานแล้ว" });
-    }
-
-    // เพิ่มข้อมูล Admin ใหม่
-    await connection.execute(
-      `INSERT INTO ADMIN (NATIONAL_ID, USERNAME, PASSWORD, FIRST_NAME, LAST_NAME, PHONE, POSITION_TITLE) 
-       VALUES (:national_id, :username, :password_hash, :first_name, :last_name, :phone, :position_title)`,
+    const result = await executeQuery(
+      `INSERT INTO BOOKING (USER_ID, ROUND_TRIP_ID, PICKUP_STOP_ID, DROPOFF_STOP_ID, SEAT_COUNT, STATUS, BOOKING_TIME)
+       VALUES (:user_id, :round_trip_id, :pickup_stop_id, :dropoff_stop_id, :seat_count, 'pending', SYSTIMESTAMP)
+       RETURNING BOOKING_ID INTO :booking_id`,
       {
-        national_id,
-        username,
-        password_hash,
-        first_name,
-        last_name,
-        phone,
-        position_title
-      },
-      { autoCommit: true }
+        user_id,
+        round_trip_id,
+        pickup_stop_id,
+        dropoff_stop_id,
+        seat_count,
+        booking_id: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+      }
     );
-
-    console.log("Admin added successfully:", username);
-    res.status(201).json({ message: "เพิ่มผู้ดูแลระบบสำเร็จ" });
-
+    res.status(201).json({ bookingId: result.outBinds.booking_id[0] });
   } catch (err) {
-    console.error("DB Error:", err);
-    
-    // จัดการ error จาก Oracle
-    if (err.errorNum === 1) {
-      return res.status(400).json({ message: "ข้อมูลซ้ำในระบบ" });
-    }
-    
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการเพิ่มผู้ดูแลระบบ" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== DELETE: ลบ Admin (Optional) ====================
-app.delete("/api/admin/:username", async (req, res) => {
-  let connection;
+// ==================== CHECK-IN ====================
+
+app.post("/api/checkins", authenticateToken, async (req, res) => {
+  const { booking_id, scanner_employee_id } = req.body;
   try {
-    const { username } = req.params;
-
-    connection = await oracledb.getConnection(dbConfig);
-
-    const result = await connection.execute(
-      `DELETE FROM ADMIN WHERE USERNAME = :username`,
-      [username],
-      { autoCommit: true }
+    const result = await executeQuery(
+      `INSERT INTO CHECKIN (BOOKING_ID, SCANNER_EMPLOYEE_ID, CHECKIN_TIME, SCAN_RESULT)
+       VALUES (:booking_id, :scanner_employee_id, SYSTIMESTAMP, 'success')
+       RETURNING CHECKIN_ID INTO :checkin_id`,
+      {
+        booking_id,
+        scanner_employee_id,
+        checkin_id: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER },
+      }
     );
-
-    if (result.rowsAffected === 0) {
-      return res.status(404).json({ message: "ไม่พบผู้ดูแลระบบนี้" });
-    }
-
-    console.log("Admin deleted:", username);
-    res.json({ message: "ลบผู้ดูแลระบบสำเร็จ" });
-
+    res.status(201).json({ checkinId: result.outBinds.checkin_id[0] });
   } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบผู้ดูแลระบบ" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== PUT: แก้ไขข้อมูล Admin (Optional) ====================
-app.put("/api/admin/:username", async (req, res) => {
-  let connection;
+// ==================== EMPLOYEE ====================
+
+app.get("/api/employees", authenticateToken, async (req, res) => {
   try {
-    const { username } = req.params;
-    const { first_name, last_name, phone, position_title, password_hash } = req.body;
-
-    connection = await oracledb.getConnection(dbConfig);
-
-    // สร้าง SQL แบบ dynamic
-    let sql = "UPDATE ADMIN SET ";
-    const binds = { username };
-    const updates = [];
-
-    if (first_name) {
-      updates.push("FIRST_NAME = :first_name");
-      binds.first_name = first_name;
-    }
-    if (last_name) {
-      updates.push("LAST_NAME = :last_name");
-      binds.last_name = last_name;
-    }
-    if (phone) {
-      updates.push("PHONE = :phone");
-      binds.phone = phone;
-    }
-    if (position_title) {
-      updates.push("POSITION_TITLE = :position_title");
-      binds.position_title = position_title;
-    }
-    if (password_hash) {
-      updates.push("PASSWORD = :password_hash");
-      binds.password_hash = password_hash;
-    }
-
-    if (updates.length === 0) {
-      return res.status(400).json({ message: "ไม่มีข้อมูลที่ต้องการแก้ไข" });
-    }
-
-    sql += updates.join(", ") + " WHERE USERNAME = :username";
-
-    const result = await connection.execute(sql, binds, { autoCommit: true });
-
-    if (result.rowsAffected === 0) {
-      return res.status(404).json({ message: "ไม่พบผู้ดูแลระบบนี้" });
-    }
-
-    console.log("Admin updated:", username);
-    res.json({ message: "แก้ไขข้อมูลสำเร็จ" });
-
+    const result = await executeQuery(
+      `SELECT * FROM EMPLOYEE ORDER BY FULL_NAME`
+    );
+    res.json(result.rows);
   } catch (err) {
-    console.error("DB Error:", err);
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูล" });
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error("Close error:", err);
-      }
-    }
+    res.status(500).json({ error: err.message });
   }
 });
 
-  
+// ==================== VEHICLE ====================
 
-
-
-
-initOracle();
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+app.get("/api/vehicles", async (req, res) => {
+  try {
+    const result = await executeQuery(`SELECT * FROM VEHICLE ORDER BY STATUS`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-/// addmin admin001 1234 มันจะเป็น password_hash
-/// superadmin superadmin 9999 มันจะเป็น password_hash
+// ==================== ROUTE ====================
 
+app.get("/api/routes", async (req, res) => {
+  try {
+    const result = await executeQuery(
+      `SELECT * FROM ROUTE ORDER BY ROUTE_NAME`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== SCHEDULE ====================
+
+app.get("/api/schedules", async (req, res) => {
+  try {
+    const result = await executeQuery(
+      `SELECT * FROM ROUND_TRIP ORDER BY TRIP_DATE`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== STOP ====================
+// ==================== STOP APIs ====================
+
+app.get("/api/stops", async (req, res) => {
+  try {
+    const result = await executeQuery(
+      `SELECT * FROM STOP_POINT ORDER BY STOP_POINT_ID`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== PERMISSION APIs ====================
+
+app.get(
+  "/api/roles/:roleId/permissions",
+  authenticateToken,
+  async (req, res) => {
+    const { roleId } = req.params;
+    try {
+      const result = await executeQuery(
+        `SELECT p.PERMISSION_NAME
+       FROM PERMISSION p
+       JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
+       WHERE rp.ROLE_ID = :roleId`,
+        { roleId }
+      );
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// ==================== ROLE APIs ====================
+
+app.get("/api/roles", authenticateToken, async (req, res) => {
+  try {
+    const result = await executeQuery(
+      `SELECT * FROM APP_ROLE ORDER BY ROLE_NAME`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/users/:userId/roles", authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+  const { roleId } = req.body;
+  try {
+    await executeQuery(
+      `INSERT INTO USER_ROLE (USER_ID, ROLE_ID) VALUES (:userId, :roleId)`,
+      { userId, roleId }
+    );
+    res.status(201).json({ message: "Role assigned successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== SYSTEM HEALTH ====================
+
+app.get("/api/health", async (req, res) => {
+  try {
+    const result = await executeQuery(`SELECT 'OK' AS status FROM dual`);
+    res.json({ status: result.rows[0].STATUS });
+  } catch (err) {
+    res.status(500).json({ error: "Database connection failed" });
+  }
+});
+
+// 1. Monthly Stop Traffic
+app.get("/api/reports/monthly-stop-traffic", async (req, res) => {
+  const { year } = req.query;
+  try {
+    const result = await db.execute(
+      `SELECT TO_CHAR(TRIP_DATE, 'MM') AS MONTH, STOP_POINT_ID, COUNT(*) AS TOTAL
+       FROM BOOKING
+       WHERE EXTRACT(YEAR FROM TRIP_DATE) = :year
+       GROUP BY TO_CHAR(TRIP_DATE, 'MM'), STOP_POINT_ID
+       ORDER BY MONTH`,
+      [year]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "เกิดข้อผิดพลาดใน monthly-stop-traffic" });
+  }
+});
+
+// 2. Monthly Booking Summary
+app.get("/api/reports/monthly-booking-summary", async (req, res) => {
+  const { year } = req.query;
+  try {
+    const result = await db.execute(
+      `SELECT TO_CHAR(TRIP_DATE, 'MM') AS MONTH, COUNT(*) AS TOTAL
+       FROM BOOKING
+       WHERE EXTRACT(YEAR FROM TRIP_DATE) = :year
+       GROUP BY TO_CHAR(TRIP_DATE, 'MM')
+       ORDER BY MONTH`,
+      [year]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "เกิดข้อผิดพลาดใน monthly-booking-summary" });
+  }
+});
+
+// 3. User Behavior
+app.get("/api/reports/user-behavior", async (req, res) => {
+  const { start, end } = req.query;
+  try {
+    const result = await db.execute(
+      `SELECT USER_ID, COUNT(*) AS BOOKINGS
+       FROM BOOKING
+       WHERE TRIP_DATE BETWEEN TO_DATE(:start, 'YYYY-MM-DD') AND TO_DATE(:end, 'YYYY-MM-DD')
+       GROUP BY USER_ID`,
+      [start, end]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "เกิดข้อผิดพลาดใน user-behavior" });
+  }
+});
+
+// 4. Daily Route Usage
+app.get("/api/reports/daily-route-usage", async (req, res) => {
+  const { start, end } = req.query;
+  try {
+    const result = await db.execute(
+      `SELECT TRIP_DATE, ROUTE_ID, COUNT(*) AS TOTAL
+       FROM BOOKING
+       WHERE TRIP_DATE BETWEEN TO_DATE(:start, 'YYYY-MM-DD') AND TO_DATE(:end, 'YYYY-MM-DD')
+       GROUP BY TRIP_DATE, ROUTE_ID
+       ORDER BY TRIP_DATE`,
+      [start, end]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "เกิดข้อผิดพลาดใน daily-route-usage" });
+  }
+});
+
+// 5. Stop Traffic by Round
+app.get("/api/reports/stop-traffic-by-round", async (req, res) => {
+  const { start, end } = req.query;
+  try {
+    const result = await db.execute(
+      `SELECT ROUND_ID, STOP_POINT_ID, COUNT(*) AS TOTAL
+       FROM BOOKING
+       WHERE TRIP_DATE BETWEEN TO_DATE(:start, 'YYYY-MM-DD') AND TO_DATE(:end, 'YYYY-MM-DD')
+       GROUP BY ROUND_ID, STOP_POINT_ID`,
+      [start, end]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: "เกิดข้อผิดพลาดใน stop-traffic-by-round" });
+  }
+});
+
+const PORT = process.env.PORT || 5000;
+
+initialize()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`🚐 Shuttle Bus Backend running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("❌ Failed to start server:", err);
+    process.exit(1);
+  });
