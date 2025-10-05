@@ -9,6 +9,7 @@ import Profile from "./pages/Profile";
 import Reports from "./pages/Reports";
 import RoundTripManager from "./pages/RoundTripManager";
 import AdminDashboard from "./pages/AdminDashboard";
+import Unauthorized from "./pages/Unauthorized";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 export default function App() {
@@ -46,6 +47,7 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/unauthorized" element={<Unauthorized />} />
       </Routes>
     </Router>
   );

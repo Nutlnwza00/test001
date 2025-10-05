@@ -40,6 +40,17 @@ async function initialize() {
   }
 }
 
+// Middleware: Require specific role (case-insensitive)
+function requireRole(roleName) {
+  return (req, res, next) => {
+    const current = (req.user?.role || "").toLowerCase();
+    if (current !== roleName.toLowerCase()) {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    next();
+  };
+}
+
 // Close Pool on Exit
 process.on("SIGINT", async () => {
   try {
@@ -99,55 +110,74 @@ app.use(cors(corsOptions));
 
 // ==================== AUTH ====================
 app.post("/api/users/login", async (req, res) => {
-  const { username, password } = req.body;
+  try {
+    const { username, password } = req.body || {};
 
-  const userRes = await executeQuery(
-    `SELECT USER_ID, USERNAME, FULL_NAME, PHONE_NUMBER, PASSWORD_HASH FROM APP_USER WHERE USERNAME = :username`,
-    { username }
-  );
-  const user = userRes.rows[0];
-  if (!user) return res.status(404).json({ error: "ไม่พบผู้ใช้" });
+    if (!username || !password) {
+      return res.status(400).json({ error: "กรุณากรอก username และ password" });
+    }
 
-  const valid = await bcrypt.compare(password, user.PASSWORD_HASH);
-  if (!valid) return res.status(401).json({ error: "รหัสผ่านไม่ถูกต้อง" });
+    // ทำ case-insensitive โดยใช้ UPPER ใน WHERE (เก็บ original case เดิม)
+    // แนะนำสร้าง function-based index: CREATE INDEX IDX_APP_USER_USERNAME_UPPER ON APP_USER(UPPER(USERNAME));
+    const userRes = await executeQuery(
+      `SELECT USER_ID, USERNAME, FULL_NAME, PHONE_NUMBER, PASSWORD_HASH
+         FROM APP_USER
+        WHERE UPPER(USERNAME) = UPPER(:username)`,
+      { username: username.trim() }
+    );
 
-  const roleRes = await executeQuery(
-    `SELECT r.ROLE_NAME FROM USER_ROLE ur JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID WHERE ur.USER_ID = :userId`,
-    { userId: user.USER_ID }
-  );
-  const permRes = await executeQuery(
-    `SELECT p.PERMISSION_NAME FROM PERMISSION p
-     JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
-     JOIN USER_ROLE ur ON rp.ROLE_ID = ur.ROLE_ID
-     WHERE ur.USER_ID = :userId`,
-    { userId: user.USER_ID }
-  );
+    const user = userRes.rows[0];
+    if (!user) return res.status(404).json({ error: "ไม่พบผู้ใช้" });
 
-  const role = roleRes.rows[0]?.ROLE_NAME || "user";
-  const permissions = permRes.rows.map((p) => p.PERMISSION_NAME);
+    if (!user.PASSWORD_HASH) {
+      return res.status(500).json({ error: "ยังไม่ได้ตั้งค่ารหัสผ่าน (PASSWORD_HASH ว่าง)" });
+    }
 
-  const token = jwt.sign(
-    {
-      userId: user.USER_ID,
-      username: user.USERNAME,
-      role,
-      permissions,
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "24h" }
-  );
+    const passwordOk = await bcrypt.compare(password, user.PASSWORD_HASH);
+    if (!passwordOk) {
+      return res.status(401).json({ error: "รหัสผ่านไม่ถูกต้อง" });
+    }
 
-  res.json({
-    token,
-    user: {
-      userId: user.USER_ID,
-      username: user.USERNAME,
-      fullName: user.FULL_NAME,
-      phoneNumber: user.PHONE_NUMBER,
-      role,
-      permissions,
-    },
-  });
+    const roleRes = await executeQuery(
+      `SELECT r.ROLE_NAME
+         FROM USER_ROLE ur
+         JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID
+        WHERE ur.USER_ID = :userId`,
+      { userId: user.USER_ID }
+    );
+    const permRes = await executeQuery(
+      `SELECT p.PERMISSION_NAME
+         FROM PERMISSION p
+         JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
+         JOIN USER_ROLE ur ON rp.ROLE_ID = ur.ROLE_ID
+        WHERE ur.USER_ID = :userId`,
+      { userId: user.USER_ID }
+    );
+
+    const role = roleRes.rows[0]?.ROLE_NAME || "user";
+    const permissions = permRes.rows.map((p) => p.PERMISSION_NAME);
+
+    const token = jwt.sign(
+      { userId: user.USER_ID, username: user.USERNAME, role, permissions },
+      process.env.JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    return res.json({
+      token,
+      user: {
+        userId: user.USER_ID,
+        username: user.USERNAME,
+        fullName: user.FULL_NAME,
+        phoneNumber: user.PHONE_NUMBER,
+        role,
+        permissions,
+      },
+    });
+  } catch (err) {
+    console.error("/api/users/login error", err);
+    return res.status(500).json({ error: "เกิดข้อผิดพลาด กรุณาลองใหม่" });
+  }
 });
 
 app.get("/api/users/profile", authenticateToken, async (req, res) => {

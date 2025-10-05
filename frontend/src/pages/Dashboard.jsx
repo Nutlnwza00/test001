@@ -35,7 +35,7 @@ export default function Dashboard() {
             icon="👤"
             onClick={() => navigate("/profile")}
           />
-          {user.role === "Admin" && (
+          {user.role?.toLowerCase() === "admin" && (
             <>
               <Card
                 title="จัดการรอบรถ"

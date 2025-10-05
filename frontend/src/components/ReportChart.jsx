@@ -1,79 +1,70 @@
-import { useState, useEffect } from "react";
-import api from "../services/api";
-import ReportChart from "../components/ReportChart";
-import ReportFilter from "../components/ReportFilter";
-
-export default function Reports() {
-  const [year, setYear] = useState("2568");
-  const [start, setStart] = useState("2025-09-01");
-  const [end, setEnd] = useState("2025-09-07");
-
-  const [monthlyTraffic, setMonthlyTraffic] = useState([]);
-  const [bookingSummary, setBookingSummary] = useState([]);
-  const [userBehavior, setUserBehavior] = useState([]);
-  const [routeUsage, setRouteUsage] = useState([]);
-  const [stopTraffic, setStopTraffic] = useState([]);
-
-  useEffect(() => {
-    api
-      .get(`/api/reports/monthly-stop-traffic?year=${year}`)
-      .then((res) => setMonthlyTraffic(res.data));
-    api
-      .get(`/api/reports/monthly-booking-summary?year=${year}`)
-      .then((res) => setBookingSummary(res.data));
-    api
-      .get(`/api/reports/user-behavior?start=${start}&end=${end}`)
-      .then((res) => setUserBehavior(res.data));
-    api
-      .get(`/api/reports/daily-route-usage?start=${start}&end=${end}`)
-      .then((res) => setRouteUsage(res.data));
-    api
-      .get(`/api/reports/stop-traffic-by-round?start=${start}&end=${end}`)
-      .then((res) => setStopTraffic(res.data));
-  }, [year, start, end]);
-
+// Generic ReportChart component
+// Props:
+// - title: string
+// - type: 'bar' | 'clustered' | 'pie' | 'line' | 'table'
+// - data: array of objects
+// This is a placeholder; you can integrate a real chart lib (e.g., Chart.js, Recharts) later.
+export default function ReportChart({ title, type, data }) {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-200 to-pink-100 dark:from-gray-900 dark:via-gray-800 dark:to-gray-700 p-6">
-      <div className="max-w-6xl mx-auto bg-white dark:bg-gray-900 rounded-2xl shadow-xl p-8 animate-fade-in-up">
-        <h1 className="text-3xl font-bold text-indigo-700 dark:text-white mb-6">
-          📊 รายงานระบบ Shuttle Bus
-        </h1>
-
-        <ReportFilter
-          year={year}
-          setYear={setYear}
-          start={start}
-          setStart={setStart}
-          end={end}
-          setEnd={setEnd}
-        />
-
-        <ReportChart
-          title="จำนวนขึ้น/ลงรายเดือน"
-          type="bar"
-          data={monthlyTraffic}
-        />
-        <ReportChart
-          title="สถิติการจองรายเดือน"
-          type="clustered"
-          data={bookingSummary}
-        />
-        <ReportChart
-          title="พฤติกรรมผู้ใช้ (ช่วงวันที่)"
-          type="pie"
-          data={userBehavior}
-        />
-        <ReportChart
-          title="จำนวนผู้ใช้แต่ละเส้นทางรายวัน"
-          type="line"
-          data={routeUsage}
-        />
-        <ReportChart
-          title="จำนวนขึ้น/ลงในแต่ละจุดจอดตามรอบเวลา"
-          type="table"
-          data={stopTraffic}
-        />
+    <div className="mb-10">
+      <h2 className="text-xl font-semibold mb-4 text-indigo-700 dark:text-indigo-300 flex items-center gap-2">
+        {title}
+      </h2>
+      <div className="p-4 rounded-lg border border-indigo-200 dark:border-indigo-700 bg-white/70 dark:bg-gray-800/60 backdrop-blur">
+        {renderContent(type, data)}
       </div>
+    </div>
+  );
+}
+
+function renderContent(type, data) {
+  if (!data || data.length === 0) {
+    return <div className="text-sm italic text-gray-500">ไม่มีข้อมูล</div>;
+  }
+  switch (type) {
+    case "table":
+      return <SimpleTable data={data} />;
+    case "pie":
+    case "bar":
+    case "clustered":
+    case "line":
+      return (
+        <pre className="text-xs overflow-auto max-h-72 bg-gray-900 text-green-300 p-3 rounded">{JSON.stringify(data, null, 2)}</pre>
+      );
+    default:
+      return <div>Unsupported chart type: {type}</div>;
+  }
+}
+
+function SimpleTable({ data }) {
+  const cols = Object.keys(data[0] || {});
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="bg-indigo-600 text-white">
+            {cols.map((c) => (
+              <th key={c} className="px-3 py-2 text-left font-medium">
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, i) => (
+            <tr
+              key={i}
+              className={i % 2 === 0 ? "bg-indigo-50 dark:bg-gray-700/40" : "bg-white dark:bg-gray-800"}
+            >
+              {cols.map((c) => (
+                <td key={c} className="px-3 py-2 border-b border-indigo-100 dark:border-gray-700">
+                  {row[c] != null ? String(row[c]) : "-"}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
