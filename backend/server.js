@@ -4,10 +4,14 @@ const oracledb = require("oracledb");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const employeeRoutes = require("./routes/employeeRoutes");
+
+// ✅ Mount route
 
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: process.env.FRONTEND_URL }));
+app.use("/api", employeeRoutes);
 
 // Oracle Instant Client
 const clientLibDir =
@@ -40,17 +44,6 @@ async function initialize() {
   }
 }
 
-// Middleware: Require specific role (case-insensitive)
-function requireRole(roleName) {
-  return (req, res, next) => {
-    const current = (req.user?.role || "").toLowerCase();
-    if (current !== roleName.toLowerCase()) {
-      return res.status(403).json({ error: "Admin only" });
-    }
-    next();
-  };
-}
-
 // Close Pool on Exit
 process.on("SIGINT", async () => {
   try {
@@ -64,29 +57,56 @@ process.on("SIGINT", async () => {
 });
 
 // Helper: Execute Query
-async function executeQuery(sql, binds = {}, options = {}) {
-  let conn;
+
+async function executeQuery(sql, params = {}) {
+  let connection;
+
   try {
-    conn = await oracledb.getConnection();
-    const result = await conn.execute(sql, binds, {
-      outFormat: oracledb.OUT_FORMAT_OBJECT,
-      autoCommit: true,
-      ...options,
+    connection = await oracledb.getConnection({
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      connectString: process.env.DB_CONNECTION_STRING,
     });
-    return result;
+
+    const result = await connection.execute(sql, params, {
+      outFormat: oracledb.OUT_FORMAT_OBJECT,
+    });
+
+    return result.rows;
+  } catch (err) {
+    console.error("❌ DB error:", err.message);
+    throw err;
   } finally {
-    if (conn) await conn.close();
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (closeErr) {
+        console.error("❌ Error closing connection:", closeErr.message);
+      }
+    }
   }
 }
 
 // Middleware: Verify Token
 function authenticateToken(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Token required" });
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: "Invalid token" });
+  if (!token) {
+    console.warn("⛔ No token provided");
+    return res.sendStatus(401);
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      console.warn("⛔ Invalid token:", err.message);
+      return res.sendStatus(403);
+    }
+
     req.user = user;
+    if (user.role === "admin") {
+      console.log("🔐 Admin authenticated:", user.username);
+    }
     next();
   });
 }
@@ -109,48 +129,121 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // ==================== AUTH ====================
+app.get(
+  "/api/users",
+  authenticateToken,
+  requireRole("admin"),
+  async (req, res) => {
+    try {
+      const result = await executeQuery(`
+      SELECT
+        u.USER_ID AS ID,
+        u.USERNAME,
+        r.ROLE_NAME AS ROLE
+      FROM APP_USER u
+      JOIN USER_ROLE ur ON u.USER_ID = ur.USER_ID
+      JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID
+    `);
+
+      const rows = Array.isArray(result?.rows) ? result.rows : result; // รองรับทั้งสองแบบ
+
+      const users = rows.map((u) => ({
+        id: u.ID,
+        username: u.USERNAME,
+        role: u.ROLE,
+      }));
+
+      res.json(users);
+    } catch (err) {
+      console.error("❌ Error in /api/users:", err.message);
+      res.status(500).json({ error: "เกิดข้อผิดพลาดในการโหลดผู้ใช้" });
+    }
+  }
+);
+app.get(
+  "/api/roles",
+  authenticateToken,
+  requireRole("admin"),
+  async (req, res) => {
+    console.log("📥 Role access by:", req.user?.username); // ✅ log ตรงนี้
+
+    try {
+      const result = await executeQuery(
+        `SELECT ROLE_ID, ROLE_NAME, DESCRIPTION FROM APP_ROLE`
+      );
+      const roles = Array.isArray(result?.rows) ? result.rows : result;
+
+      console.log("📦 Roles from DB:", roles); // ✅ log ตรงนี้
+      res.json(roles);
+    } catch (err) {
+      console.error("❌ Error in /api/roles:", err.message);
+      res.status(500).json({ error: "เกิดข้อผิดพลาดในการโหลดสิทธิ์" });
+    }
+  }
+);
+app.put(
+  "/api/users/:id/role",
+  authenticateToken,
+  requireRole("admin"),
+  async (req, res) => {
+    const userId = req.params.id;
+    const { role } = req.body;
+
+    console.log("📥 Role change request:", { userId, role }); // ✅ log ตรงนี้
+
+    try {
+      const roleRes = await executeQuery(
+        `SELECT ROLE_ID FROM APP_ROLE WHERE ROLE_NAME = :roleName`,
+        { roleName: role }
+      );
+
+      const rows = Array.isArray(roleRes?.rows) ? roleRes.rows : roleRes;
+      console.log("🔍 Role lookup result:", rows); // ✅ log ตรงนี้
+
+      if (!rows.length) {
+        console.warn("⛔ Role not found:", role);
+        return res.status(404).json({ error: "Role not found" });
+      }
+
+      const roleId = rows[0].ROLE_ID;
+
+      await executeQuery(
+        `UPDATE USER_ROLE SET ROLE_ID = :roleId WHERE USER_ID = :userId`,
+        { roleId, userId }
+      );
+
+      console.log("✅ Role updated for USER_ID:", userId); // ✅ log ตรงนี้
+      res.json({ success: true });
+    } catch (err) {
+      console.error("❌ Error updating role:", err.message);
+      res.status(500).json({ error: "เกิดข้อผิดพลาดในการเปลี่ยนสิทธิ์" });
+    }
+  }
+);
+
 app.post("/api/users/login", async (req, res) => {
   try {
     const { username, password } = req.body || {};
 
-    if (!username || !password) {
-      return res.status(400).json({ error: "กรุณากรอก username และ password" });
-    }
-
-    // ทำ case-insensitive โดยใช้ UPPER ใน WHERE (เก็บ original case เดิม)
-    // แนะนำสร้าง function-based index: CREATE INDEX IDX_APP_USER_USERNAME_UPPER ON APP_USER(UPPER(USERNAME));
     const userRes = await executeQuery(
-      `SELECT USER_ID, USERNAME, FULL_NAME, PHONE_NUMBER, PASSWORD_HASH
-         FROM APP_USER
-        WHERE UPPER(USERNAME) = UPPER(:username)`,
-      { username: username.trim() }
+      `SELECT USER_ID, USERNAME, FULL_NAME, PHONE_NUMBER, PASSWORD_HASH FROM APP_USER WHERE USERNAME = :username`,
+      { username }
     );
-
     const user = userRes.rows[0];
     if (!user) return res.status(404).json({ error: "ไม่พบผู้ใช้" });
 
-    if (!user.PASSWORD_HASH) {
-      return res.status(500).json({ error: "ยังไม่ได้ตั้งค่ารหัสผ่าน (PASSWORD_HASH ว่าง)" });
-    }
-
-    const passwordOk = await bcrypt.compare(password, user.PASSWORD_HASH);
-    if (!passwordOk) {
-      return res.status(401).json({ error: "รหัสผ่านไม่ถูกต้อง" });
-    }
+    const valid = await bcrypt.compare(password, user.PASSWORD_HASH);
+    if (!valid) return res.status(401).json({ error: "รหัสผ่านไม่ถูกต้อง" });
 
     const roleRes = await executeQuery(
-      `SELECT r.ROLE_NAME
-         FROM USER_ROLE ur
-         JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID
-        WHERE ur.USER_ID = :userId`,
+      `SELECT r.ROLE_NAME FROM USER_ROLE ur JOIN APP_ROLE r ON ur.ROLE_ID = r.ROLE_ID WHERE ur.USER_ID = :userId`,
       { userId: user.USER_ID }
     );
     const permRes = await executeQuery(
-      `SELECT p.PERMISSION_NAME
-         FROM PERMISSION p
-         JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
-         JOIN USER_ROLE ur ON rp.ROLE_ID = ur.ROLE_ID
-        WHERE ur.USER_ID = :userId`,
+      `SELECT p.PERMISSION_NAME FROM PERMISSION p
+     JOIN ROLE_PERMISSION rp ON p.PERMISSION_ID = rp.PERMISSION_ID
+     JOIN USER_ROLE ur ON rp.ROLE_ID = ur.ROLE_ID
+     WHERE ur.USER_ID = :userId`,
       { userId: user.USER_ID }
     );
 
@@ -158,12 +251,17 @@ app.post("/api/users/login", async (req, res) => {
     const permissions = permRes.rows.map((p) => p.PERMISSION_NAME);
 
     const token = jwt.sign(
-      { userId: user.USER_ID, username: user.USERNAME, role, permissions },
+      {
+        userId: user.USER_ID,
+        username: user.USERNAME,
+        role,
+        permissions,
+      },
       process.env.JWT_SECRET,
       { expiresIn: "24h" }
     );
 
-    return res.json({
+    res.json({
       token,
       user: {
         userId: user.USER_ID,
@@ -175,9 +273,9 @@ app.post("/api/users/login", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("/api/users/login error", err);
-    return res.status(500).json({ error: "เกิดข้อผิดพลาด กรุณาลองใหม่" });
-  }
+    console.error("❌ Login error:", err.message);
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการเข้าสู่ระบบ" });
+  } 
 });
 
 app.get("/api/users/profile", authenticateToken, async (req, res) => {
@@ -256,17 +354,6 @@ app.post("/api/checkins", authenticateToken, async (req, res) => {
 
 // ==================== EMPLOYEE ====================
 
-app.get("/api/employees", authenticateToken, async (req, res) => {
-  try {
-    const result = await executeQuery(
-      `SELECT * FROM EMPLOYEE ORDER BY FULL_NAME`
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ==================== VEHICLE ====================
 
 app.get("/api/vehicles", async (req, res) => {
@@ -340,32 +427,7 @@ app.get(
   }
 );
 
-// ==================== ROLE APIs ====================
 
-app.get("/api/roles", authenticateToken, async (req, res) => {
-  try {
-    const result = await executeQuery(
-      `SELECT * FROM APP_ROLE ORDER BY ROLE_NAME`
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/users/:userId/roles", authenticateToken, async (req, res) => {
-  const { userId } = req.params;
-  const { roleId } = req.body;
-  try {
-    await executeQuery(
-      `INSERT INTO USER_ROLE (USER_ID, ROLE_ID) VALUES (:userId, :roleId)`,
-      { userId, roleId }
-    );
-    res.status(201).json({ message: "Role assigned successfully" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ==================== SYSTEM HEALTH ====================
 

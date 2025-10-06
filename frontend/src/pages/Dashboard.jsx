@@ -16,7 +16,7 @@ export default function Dashboard() {
   return (
     <MainLayout>
       <div className="p-6">
-        <h1 className="text-2xl font-bold mb-2">สวัสดีคุณ {user.fullName}</h1>
+        <h1 className="text-2xl font-bold mb-2">สวัสดีคุณ {user.fullname}</h1>
         <p className="mb-4">สถานะ: {user.role}</p>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           <Card title="จองรถ" icon="🚌" onClick={() => navigate("/booking")} />
@@ -46,6 +46,16 @@ export default function Dashboard() {
                 title="รายงาน"
                 icon="📊"
                 onClick={() => navigate("/reports")}
+              />
+              <Card
+                title="จัดการสิทธิ์ผู้ใช้"
+                icon="🔐"
+                onClick={() => navigate("/admin/permissions")}
+              />
+              <Card
+                title="จัดการพนักงาน"
+                icon="👥"
+                onClick={() => navigate("/admin/employees")}
               />
             </>
           )}

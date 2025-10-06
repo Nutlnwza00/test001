@@ -11,10 +11,14 @@ import RoundTripManager from "./pages/RoundTripManager";
 import AdminDashboard from "./pages/AdminDashboard";
 import Unauthorized from "./pages/Unauthorized";
 import ProtectedRoute from "./components/ProtectedRoute";
+import PermissionManagement from "./pages/PermissionManagement";
+import { Toaster } from "react-hot-toast";
+import EmployeeManagement from "./pages/EmployeeManagement";
 
 export default function App() {
   return (
     <Router>
+      <Toaster position="top-right" />
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
@@ -23,18 +27,11 @@ export default function App() {
         <Route path="/schedule" element={<Schedule />} />
         <Route path="/checkin" element={<Checkin />} />
         <Route path="/profile" element={<Profile />} />
-        <Route
-          path="/admin-dashboard"
-          element={
-            <ProtectedRoute allowedRoles={["admin"]}>
-              <AdminDashboard />
-            </ProtectedRoute>
-          }
-        />
+
         <Route
           path="/reports"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["Admin"]}>
               <Reports />
             </ProtectedRoute>
           }
@@ -42,12 +39,11 @@ export default function App() {
         <Route
           path="/rounds"
           element={
-            <ProtectedRoute allowedRoles={["admin"]}>
+            <ProtectedRoute allowedRoles={["Admin"]}>
               <RoundTripManager />
             </ProtectedRoute>
           }
         />
-        <Route path="/unauthorized" element={<Unauthorized />} />
       </Routes>
     </Router>
   );

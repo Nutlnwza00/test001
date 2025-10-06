@@ -10,12 +10,22 @@ export default function Login() {
 
   const handleLogin = async () => {
     try {
-     const res = await api.post("/api/users/login", { username, password });
-     console.log("USER FROM BACKEND:", res.data.user);
+      const res = await api.post("/api/users/login", { username, password });
       const { token, user } = res.data;
+
+      console.log("✅ Login success:", res.data);
+      console.log("USER FROM BACKEND:", user);
+      console.log("user =", user);
 
       localStorage.setItem("token", token);
       localStorage.setItem("user", JSON.stringify(user));
+
+      console.log(
+        "🔀 Redirecting to:",
+        user.permissions?.includes("VIEW_ADMIN_DASHBOARD")
+          ? "admin-dashboard"
+          : "dashboard"
+      );
 
       if (user.permissions?.includes("VIEW_ADMIN_DASHBOARD")) {
         navigate("/admin-dashboard");
@@ -23,6 +33,7 @@ export default function Login() {
         navigate("/dashboard");
       }
     } catch (err) {
+      console.error("❌ Login failed:", err.response?.data || err);
       setError(err.response?.data?.error || "เข้าสู่ระบบไม่สำเร็จ");
     }
   };
